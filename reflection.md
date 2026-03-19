@@ -40,14 +40,23 @@ Answer each question in 3 to 5 sentences. Be specific and honest about what actu
 ## 4. What did you learn about Streamlit and state?
 
 - In your own words, explain why the secret number kept changing in the original app.
+-> The secret number kept changing in the original app because
 - How would you explain Streamlit "reruns" and session state to a friend who has never used Streamlit?
 - What change did you make that finally gave the game a stable secret number?
+-> for
+```if "secret" not in st.session_state:         # line 86
+    st.session_state.secret = random.randint(low, high)
+```
 
+This only generates a new secret when it's NOT already in session_state — so it's stable across reruns. BUT when you **switch difficulty**, `low` and `high` change to a different range while the old secret stays.
+Store difficulty in session_state. On each rerun, compare. If changed → reset everything.
 ---
 
 ## 5. Looking ahead: your developer habits
 
 - What is one habit or strategy from this project that you want to reuse in future labs or projects?
-  - This could be a testing habit, a prompting strategy, or a way you used Git.
+  -> Using git for tracking every step is crucial and using standard comments as well. 
 - What is one thing you would do differently next time you work with AI on a coding task?
+-> Through experience, I have learned to use plan mode first then execute or switch to agent mode which give better picture for both AI model and developer.
 - In one or two sentences, describe how this project changed the way you think about AI generated code.
+-> I think I got the glimpse of how new AI engineering would work or the entire way of engineering would change later as being proficient in using AI for developing is way efficient than coding yourself.
