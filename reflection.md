@@ -20,19 +20,21 @@ Answer each question in 3 to 5 sentences. Be specific and honest about what actu
 - Which AI tools did you use on this project (for example: ChatGPT, Gemini, Copilot)?
   Claude Code & Copilot
 - Give one example of an AI suggestion that was correct (including what the AI suggested and how you verified the result).
-  Used copilot for assisting me with the command scripts for activating virtual environment
+  Used claude code to refactor the type error lofic into logic utils and checked by passing the test cases 
 - Give one example of an AI suggestion that was incorrect or misleading (including what the AI suggested and how you verified the result).
-
+  AI was not able to correctly suggest the remaining bugs and I had to point it out by running the app
 
 ---
 
 ## 3. Debugging and testing your fixes
 
 - How did you decide whether a bug was really fixed?
+-> I manually tried the app and testing my inputting invalid inputs and validating with my logic.
 - Describe at least one test you ran (manual or using pytest)  
   and what it showed you about your code.
+-> I ran the "python -m pytest" which showed 3 passed in 0.06s
 - Did AI help you design or understand any tests? How?
-
+-> Yes indeed, Claude created a new pytest  folder which I removed later as I already had a test folder.
 ---
 
 ## 4. What did you learn about Streamlit and state?
