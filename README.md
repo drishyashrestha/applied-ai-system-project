@@ -100,5 +100,5 @@ For the full reflection prompts (AI collaboration, biases, limitations, and test
 
 ## Portfolio Notes
 
-- GitHub repository link: add your final public repo URL here.
+
 - Loom walkthrough: https://www.loom.com/share/789845a1a053436f87a67c666f8c7f11
