@@ -1,380 +1,225 @@
-import random
+from __future__ import annotations
+
+from datetime import datetime
+import json
+import logging
+from pathlib import Path
+
 import streamlit as st
 
-def get_range_for_difficulty(difficulty: str):
-    if difficulty == "Easy":
-        return 1, 20
-    if difficulty == "Normal":
-        return 1, 100
-    if difficulty == "Hard":
-        return 1, 200
-    return 1, 100
+from logic_utils import benchmark_assistant, diagnose_bug, export_trace
 
 
-def parse_guess(raw: str):
-    if raw is None:
-        return False, None, "Enter a guess."
+logging.basicConfig(level=logging.INFO)
+LOGGER = logging.getLogger(__name__)
+LOG_PATH = Path(__file__).with_name("diagnosis_log.jsonl")
 
-    if raw == "":
-        return False, None, "Enter a guess."
 
+SAMPLE_REPORTS = {
+    "State reset bug": "The secret number changes every time I click submit in Streamlit.",
+    "Invalid input bug": "My invalid string input still uses up an attempt and affects the score.",
+    "Hint bug": "The hints say go higher when the guess is already too high.",
+    "Difficulty bug": "After the difficulty changes, the range says easy but the secret behaves like hard mode.",
+}
+
+
+def log_diagnosis(report_text: str, result: dict[str, object]) -> None:
+    entry = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "report": report_text,
+        "diagnosis": result.get("diagnosis"),
+        "root_cause": result.get("root_cause"),
+        "confidence": result.get("confidence"),
+        "status": result.get("status"),
+    }
     try:
-        if "." in raw:
-            value = int(float(raw))
-        else:
-            value = int(raw)
-    except Exception:
-        return False, None, "That is not a number."
-
-    return True, value, None
+        with LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=True) + "\n")
+    except OSError as error:
+        LOGGER.warning("Could not write diagnosis log: %s", error)
 
 
-def check_guess(guess, secret):
-    if guess == secret:
-        return "Win", "🎉 Correct!"
+st.set_page_config(page_title="Game Glitch Investigator", page_icon="🕵️", layout="wide")
 
-
-    if guess > secret:
-        return "Too High", "📈 Go LOWER!"
-    else:
-        return "Too Low", "📉 Go HIGHER!"
-
-
-
-def update_score(current_score: int, outcome: str, attempt_number: int):
-    if outcome == "Win":
-        points = 100 - 10 * attempt_number
-        if points < 10:
-            points = 10
-        return current_score + points
-
-    if outcome == "Too High" or outcome == "Too Low":
-        return current_score - 5
-
-    return current_score
-
-# ── Page config ───────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Glitchy Guesser", page_icon="🎮", layout="centered")
-
-# ── Difficulty theme ───────────────────────────────────────────────────────────
-difficulty_colors = {"Easy": "#00b894", "Normal": "#0984e3", "Hard": "#d63031"}
-difficulty_emojis = {"Easy": "🟢", "Normal": "🔵", "Hard": "🔴"}
-
-# ── Global CSS ─────────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-/* ── Animated gradient background ── */
-@keyframes bgMove {
-    0%   { background-position: 0% 50%; }
-    50%  { background-position: 100% 50%; }
-    100% { background-position: 0% 50%; }
-}
-@keyframes fadeSlideIn {
-    from { opacity: 0; transform: translateY(-12px); }
-    to   { opacity: 1; transform: translateY(0); }
-}
-@keyframes floatUp {
-    0%   { transform: translateY(0px); opacity: 0.6; }
-    50%  { transform: translateY(-18px); opacity: 1; }
-    100% { transform: translateY(0px); opacity: 0.6; }
-}
-
-.stApp {
-    background: linear-gradient(-45deg, #0f0c29, #302b63, #24243e, #1a1a2e);
-    background-size: 400% 400%;
-    animation: bgMove 10s ease infinite;
-}
-
-/* ── Floating emoji particles ── */
-.particles {
-    position: fixed;
-    top: 0; left: 0;
-    width: 100%; height: 100%;
-    pointer-events: none;
-    z-index: 0;
-    overflow: hidden;
-}
-.particle {
-    position: absolute;
-    font-size: 1.4rem;
-    animation: floatUp 4s ease-in-out infinite;
-    opacity: 0.5;
-}
-
-/* ── Game title ── */
-.game-title {
-    text-align: center;
-    font-size: 2.6rem;
-    font-weight: 800;
-    background: linear-gradient(90deg, #a29bfe, #fd79a8, #fdcb6e);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    animation: fadeSlideIn 0.6s ease;
-    margin-bottom: 0;
-}
-.game-subtitle {
-    text-align: center;
-    color: #a0a8c0;
-    font-size: 0.9rem;
-    margin-top: 2px;
-    margin-bottom: 20px;
-}
-
-/* ── Score + attempts bar ── */
-.stat-row {
-    display: flex;
-    gap: 12px;
-    margin-bottom: 16px;
-    animation: fadeSlideIn 0.5s ease;
-}
-.stat-box {
-    flex: 1;
-    border-radius: 12px;
-    padding: 12px 16px;
-    text-align: center;
-    font-weight: 700;
-    font-size: 1.1rem;
-    color: #fff;
-}
-
-/* ── Hint boxes ── */
-.hint-box {
-    border-radius: 10px;
-    padding: 12px 18px;
-    font-weight: 600;
-    font-size: 1rem;
-    margin: 10px 0;
-    animation: fadeSlideIn 0.4s ease;
-}
-.hint-high  { background: rgba(214, 48, 49, 0.25);  border-left: 4px solid #d63031; color: #ff7675; }
-.hint-low   { background: rgba(9, 132, 227, 0.25);  border-left: 4px solid #0984e3; color: #74b9ff; }
-.hint-win   { background: rgba(0, 184, 148, 0.25);  border-left: 4px solid #00b894; color: #55efc4; }
-.hint-error { background: rgba(253, 121, 168, 0.2); border-left: 4px solid #fd79a8; color: #fd79a8; }
-
-/* ── History badges ── */
-.history-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-top: 8px;
-}
-.badge {
-    border-radius: 20px;
-    padding: 4px 14px;
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: #fff;
-}
-
-/* ── Range info box ── */
-.range-box {
-    border-radius: 10px;
-    padding: 10px 16px;
-    font-size: 0.95rem;
-    color: #dfe6e9;
-    margin-bottom: 14px;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# ── Floating background particles ──────────────────────────────────────────────
-st.markdown("""
-<div class="particles">
-  <span class="particle" style="left:5%;  top:15%; animation-delay:0s;">🎯</span>
-  <span class="particle" style="left:20%; top:70%; animation-delay:1s;">⭐</span>
-  <span class="particle" style="left:40%; top:30%; animation-delay:2s;">🎲</span>
-  <span class="particle" style="left:60%; top:80%; animation-delay:0.5s;">✨</span>
-  <span class="particle" style="left:75%; top:20%; animation-delay:1.5s;">🎮</span>
-  <span class="particle" style="left:90%; top:60%; animation-delay:3s;">🔢</span>
-</div>
-""", unsafe_allow_html=True)
-
-# ── Title ──────────────────────────────────────────────────────────────────────
-st.markdown('<div class="game-title">🎮 Glitchy Guesser</div>', unsafe_allow_html=True)
-st.markdown('<div class="game-subtitle">Can you find the secret number? 🕵️</div>', unsafe_allow_html=True)
-
-# ── Sidebar ────────────────────────────────────────────────────────────────────
-st.sidebar.markdown("## ⚙️ Settings")
-
-difficulty = st.sidebar.selectbox(
-    "Difficulty",
-    ["Easy", "Normal", "Hard"],
-    index=1,
-    format_func=lambda d: f"{difficulty_emojis[d]} {d}",
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background: radial-gradient(circle at top left, #171529 0%, #0f0f1f 45%, #090913 100%);
+        color: #f5f7fb;
+    }
+    .hero {
+        padding: 1.6rem 1.8rem;
+        border-radius: 1.2rem;
+        background: linear-gradient(135deg, rgba(99,102,241,0.22), rgba(14,165,233,0.14));
+        border: 1px solid rgba(255,255,255,0.12);
+        box-shadow: 0 20px 60px rgba(0,0,0,0.28);
+        margin-bottom: 1rem;
+    }
+    .metric-card {
+        border-radius: 1rem;
+        padding: 1rem 1rem;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.09);
+        min-height: 110px;
+    }
+    .step-card {
+        border-left: 4px solid #67e8f9;
+        padding: 0.8rem 1rem;
+        background: rgba(255,255,255,0.04);
+        border-radius: 0.8rem;
+        margin-bottom: 0.55rem;
+    }
+    .muted {
+        color: rgba(255,255,255,0.7);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
-attempt_limit_map = {"Easy": 6, "Normal": 8, "Hard": 5}
-attempt_limit = attempt_limit_map[difficulty]
 
-low, high = get_range_for_difficulty(difficulty)
+if "last_result" not in st.session_state:
+    st.session_state.last_result = None
+if "benchmark" not in st.session_state:
+    st.session_state.benchmark = None
+if "report_text" not in st.session_state:
+    st.session_state.report_text = SAMPLE_REPORTS["State reset bug"]
 
-color = difficulty_colors[difficulty]
-emoji = difficulty_emojis[difficulty]
 
-st.sidebar.markdown(f"""
-<div style="background:rgba(255,255,255,0.07); border-radius:10px; padding:12px; margin-top:8px;">
-  <div style="color:{color}; font-weight:700; font-size:1rem;">{emoji} {difficulty} Mode</div>
-  <div style="color:#b2bec3; font-size:0.85rem; margin-top:4px;">📏 Range: {low} – {high}</div>
-  <div style="color:#b2bec3; font-size:0.85rem;">🎯 Attempts: {attempt_limit}</div>
-</div>
-""", unsafe_allow_html=True)
-
-# ── Session state init ─────────────────────────────────────────────────────────
-if "secret" not in st.session_state:
-    st.session_state.secret = random.randint(low, high)
-
-if "attempts" not in st.session_state:
-    st.session_state.attempts = 1
-
-if "score" not in st.session_state:
-    st.session_state.score = 0
-
-if "status" not in st.session_state:
-    st.session_state.status = "playing"
-
-if "history" not in st.session_state:
-    st.session_state.history = []
-
-if "difficulty" not in st.session_state:
-    st.session_state.difficulty = difficulty
-
-if st.session_state.difficulty != difficulty:
-    st.session_state.difficulty = difficulty
-    st.session_state.secret = random.randint(low, high)
-    st.session_state.attempts = 1
-    st.session_state.score = 0
-    st.session_state.status = "playing"
-    st.session_state.history = []
-
-# ── Score + attempts stats ─────────────────────────────────────────────────────
-attempts_left = attempt_limit - st.session_state.attempts
-attempts_color = "#00b894" if attempts_left > 3 else "#fdcb6e" if attempts_left > 1 else "#d63031"
-attempts_rgba = "0,184,148" if attempts_left > 3 else "253,203,110" if attempts_left > 1 else "214,48,49"
-
-st.markdown(f"""
-<div class="stat-row">
-  <div class="stat-box" style="background:rgba(108,92,231,0.3); border:1px solid #6c5ce7;">
-    ⭐ Score<br><span style="font-size:1.5rem;">{st.session_state.score}</span>
-  </div>
-  <div class="stat-box" style="background:rgba({attempts_rgba},0.3); border:1px solid {attempts_color};">
-    🎯 Attempts Left<br><span style="font-size:1.5rem;">{attempts_left}</span>
-  </div>
-  <div class="stat-box" style="background:rgba(9,132,227,0.3); border:1px solid {color};">
-    {emoji} Mode<br><span style="font-size:1.1rem;">{low}–{high}</span>
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-# ── Debug expander ─────────────────────────────────────────────────────────────
-with st.expander("🛠️ Developer Debug Info"):
-    st.write("Secret:", st.session_state.secret)
-    st.write("Attempts:", st.session_state.attempts)
-    st.write("Score:", st.session_state.score)
-    st.write("Difficulty:", difficulty)
-    st.write("History:", st.session_state.history)
-
-# ── Input + buttons ────────────────────────────────────────────────────────────
-st.markdown(f"""
-<div class="range-box" style="background:rgba(255,255,255,0.05); border-left: 4px solid {color};">
-  🔢 Guess a number between <strong>{low}</strong> and <strong>{high}</strong>
-</div>
-""", unsafe_allow_html=True)
-
-raw_guess = st.text_input(
-    "Enter your guess:",
-    placeholder=f"Pick a number between {low} and {high}...",
-    key=f"guess_input_{difficulty}"
+st.markdown(
+    """
+    <div class="hero">
+      <h1 style="margin-bottom:0.2rem;">🕵️ Game Glitch Investigator</h1>
+            <p class="muted" style="margin:0;">A local applied-AI debugging assistant extended from a Streamlit guessing game. Type a bug report, not a game move: the app retrieves similar cases, reasons about root cause, and reports confidence.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    submit = st.button("🚀 Submit Guess", use_container_width=True)
-with col2:
-    new_game = st.button("🔁 New Game", use_container_width=True)
-with col3:
-    show_hint = st.checkbox("💡 Show hint", value=True)
+st.info(
+        "Start here: this project was redesigned from a guessing game into a debugging assistant. "
+        "To test it, describe a bug in plain English, or click one of the sample bug reports in the sidebar. "
+        "Good prompts mention symptoms like state resets, invalid input, wrong hints, or difficulty/range mismatches."
+)
 
-# ── New game ───────────────────────────────────────────────────────────────────
-if new_game:
-    st.session_state.attempts = 1
-    st.session_state.secret = random.randint(low, high)
-    st.session_state.score = 0
-    st.session_state.status = "playing"
-    st.session_state.history = []
-    st.markdown('<div class="hint-box hint-win">🔁 New game started — good luck!</div>', unsafe_allow_html=True)
-    st.rerun()
+with st.sidebar:
+    st.header("Controls")
+    st.caption("Pick a sample or submit your own bug report.")
+    st.markdown(
+        """
+        **What to ask**
+        - "The secret changes every time I click submit"
+        - "Invalid input still uses an attempt"
+        - "The hints point the wrong way"
+        - "Difficulty changes but the secret does not reset"
+        """
+    )
+    for label, report in SAMPLE_REPORTS.items():
+        if st.button(label, use_container_width=True):
+            st.session_state.report_text = report
+            st.session_state.last_result = diagnose_bug(report)
+            log_diagnosis(report, st.session_state.last_result)
+            st.rerun()
 
-# ── Game over states ───────────────────────────────────────────────────────────
-if st.session_state.status != "playing":
-    if st.session_state.status == "won":
-        st.markdown('<div class="hint-box hint-win">🏆 You already won! Start a new game to play again.</div>', unsafe_allow_html=True)
-    else:
-        st.markdown('<div class="hint-box hint-error">💀 Game over. Start a new game to try again.</div>', unsafe_allow_html=True)
-    st.stop()
+    st.divider()
+    if st.button("Run reliability benchmark", use_container_width=True):
+        st.session_state.benchmark = benchmark_assistant()
+        st.rerun()
 
-# ── Submit logic ───────────────────────────────────────────────────────────────
-if submit:
-    ok, guess_int, err = parse_guess(raw_guess)
+    if st.session_state.benchmark:
+        st.subheader("Benchmark summary")
+        st.metric("Accuracy", f"{st.session_state.benchmark['accuracy']:.0%}")
+        st.metric("Avg confidence", f"{st.session_state.benchmark['average_confidence']:.2f}")
+        st.metric("Cases", st.session_state.benchmark["total_cases"])
 
-    if not ok:
-        st.markdown(f'<div class="hint-box hint-error">⚠️ {err}</div>', unsafe_allow_html=True)
-    else:
-        st.session_state.attempts += 1
-        st.session_state.history.append(guess_int)
 
-        secret = st.session_state.secret
+left, right = st.columns([1.25, 0.95], gap="large")
 
-        outcome, message = check_guess(guess_int, secret)
+with left:
+    st.subheader("Bug report")
+    with st.form("report_form"):
+        report_text = st.text_area(
+            "Describe the bug or confusing behavior",
+            value=st.session_state.report_text,
+            height=160,
+            placeholder="Example: The secret number changes every time I click submit.",
+        )
+        submitted = st.form_submit_button("Investigate bug")
 
-        if show_hint:
-            if outcome == "Too High":
-                st.markdown(f'<div class="hint-box hint-high">{message}</div>', unsafe_allow_html=True)
-            elif outcome == "Too Low":
-                st.markdown(f'<div class="hint-box hint-low">{message}</div>', unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div class="hint-box hint-win">{message}</div>', unsafe_allow_html=True)
+    if submitted:
+        st.session_state.report_text = report_text
+        st.session_state.last_result = diagnose_bug(report_text)
+        log_diagnosis(report_text, st.session_state.last_result)
 
-        st.session_state.score = update_score(
-            current_score=st.session_state.score,
-            outcome=outcome,
-            attempt_number=st.session_state.attempts,
+    result = st.session_state.last_result
+    if result:
+        status = result.get("status")
+        confidence = float(result.get("confidence") or 0.0)
+        st.markdown("### Diagnosis")
+        st.markdown(f"**Status:** {status}")
+        st.markdown(f"**Root cause:** {result.get('root_cause') or 'Need more detail'}")
+        st.markdown(f"**Recommended fix:** {result.get('recommended_fix')}")
+
+        metric_col1, metric_col2, metric_col3 = st.columns(3)
+        metric_col1.markdown(
+            f'<div class="metric-card"><div class="muted">Confidence</div><h2>{confidence:.0%}</h2></div>',
+            unsafe_allow_html=True,
+        )
+        metric_col2.markdown(
+            f'<div class="metric-card"><div class="muted">Top match</div><h2>{result["retrieved_cases"][0]["title"] if result.get("retrieved_cases") else "None"}</h2></div>',
+            unsafe_allow_html=True,
+        )
+        metric_col3.markdown(
+            f'<div class="metric-card"><div class="muted">Matched terms</div><h2>{len(result["retrieved_cases"][0]["matched_terms"]) if result.get("retrieved_cases") else 0}</h2></div>',
+            unsafe_allow_html=True,
         )
 
-        if outcome == "Win":
-            st.balloons()
-            st.session_state.status = "won"
-            st.markdown(f"""
-<div class="hint-box hint-win" style="font-size:1.1rem;">
-  🎉 You won! The secret was <strong>{st.session_state.secret}</strong>.<br>
-  🏆 Final score: <strong>{st.session_state.score}</strong>
-</div>
-""", unsafe_allow_html=True)
-        else:
-            if st.session_state.attempts >= attempt_limit:
-                st.session_state.status = "lost"
-                st.markdown(f"""
-<div class="hint-box hint-error" style="font-size:1.1rem;">
-  💀 Out of attempts! The secret was <strong>{st.session_state.secret}</strong>.<br>
-  📊 Final score: <strong>{st.session_state.score}</strong>
-</div>
-""", unsafe_allow_html=True)
+        st.markdown("### Agent trace")
+        for step in result.get("trace", []):
+            st.markdown(f'<div class="step-card">{step}</div>', unsafe_allow_html=True)
 
-# ── Guess history ──────────────────────────────────────────────────────────────
-if st.session_state.history:
-    st.markdown("#### 📜 Guess History")
-    badges = ""
-    for g in st.session_state.history:
-        if g < st.session_state.secret:
-            bg = "#0984e3"
-            label = f"⬆️ {g}"
-        elif g > st.session_state.secret:
-            bg = "#d63031"
-            label = f"⬇️ {g}"
-        else:
-            bg = "#00b894"
-            label = f"✅ {g}"
-        badges += f'<span class="badge" style="background:{bg};">{label}</span>'
-    st.markdown(f'<div class="history-row">{badges}</div>', unsafe_allow_html=True)
+        st.markdown("### Retrieved cases")
+        for case in result.get("retrieved_cases", []):
+            with st.expander(f"{case['title']} · score {case['score']:.2f}"):
+                st.write("Root cause:", case["root_cause"])
+                st.write("Diagnosis:", case["diagnosis"])
+                st.write("Fix:", case["fix"])
+                st.write("Matched terms:", ", ".join(case["matched_terms"]) or "None")
 
-st.divider()
-st.markdown('<div style="text-align:center; color:#636e72; font-size:0.8rem;">🤖 Built by an AI that claims this code is production-ready.</div>', unsafe_allow_html=True)
+with right:
+    st.subheader("How it works")
+    st.write("1. Parse the bug report for key terms and symptoms.")
+    st.write("2. Retrieve similar debugging cases from a local knowledge base.")
+    st.write("3. Rank the most likely root cause and recommended fix.")
+    st.write("4. Score confidence from retrieval strength and match separation.")
+
+    st.subheader("What this used to be")
+    st.write(
+        "The earlier project was a number-guessing game. Those same ideas now show up as debugging cases: "
+        "state reset, hint direction, input validation, scoring, and difficulty reset behavior."
+    )
+
+    st.subheader("Guardrails")
+    st.write("- The assistant asks for more detail when the report is empty.")
+    st.write("- Invalid or vague reports do not produce a fabricated root cause.")
+    st.write("- Every result includes the retrieved evidence used to form the answer.")
+
+    st.subheader("Current log")
+    if LOG_PATH.exists():
+        try:
+            lines = LOG_PATH.read_text(encoding="utf-8").splitlines()[-5:]
+            for line in reversed(lines):
+                st.code(line, language="json")
+        except OSError as error:
+            st.warning(f"Could not read log file: {error}")
+    else:
+        st.caption("No log entries yet.")
+
+if st.session_state.benchmark:
+    st.divider()
+    st.subheader("Benchmark details")
+    for case in st.session_state.benchmark["cases"]:
+        st.write(
+            f"- {case['report']} -> predicted {case['predicted_case_id']} | correct={case['correct']} | confidence={case['confidence']:.2f}"
+        )
